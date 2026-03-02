@@ -24,6 +24,15 @@ const LucideIcon = ({ name, className = '', style = {}, size, strokeWidth = 2 })
 const TAG_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#f97316'];
 const getRandomColor = () => TAG_COLORS[Math.floor(Math.random() * TAG_COLORS.length)];
 
+const UNSORTED_ALIASES = new Set(['', 'general', 'genel', 'unsorted', 'gelen kutusu']);
+const normalizeFolder = (folder) => {
+    const raw = folder == null ? '' : String(folder).trim();
+    if (!raw) return null;
+    return UNSORTED_ALIASES.has(raw.toLowerCase()) ? null : raw;
+};
+const isUnsortedFolder = (folder) => normalizeFolder(folder) === null;
+const getFolderLabel = (folder) => normalizeFolder(folder) || 'Unsorted';
+
 const formatDate = (dateStr) => {
     if (!dateStr) return '';
     try {
@@ -39,11 +48,6 @@ const formatDate = (dateStr) => {
         }
         return dateStr;
     } catch { return dateStr; }
-};
-
-const safeDecode = (str) => {
-    if (!str) return '';
-    try { return decodeURIComponent(str); } catch (e) { return str; }
 };
 
 const sanitizeUrl = (url) => {
@@ -91,7 +95,7 @@ const handleDownload = async (url) => {
     } catch (err) { window.open(url, '_blank'); }
 };
 
-const HlsVideoPlayer = ({ src, poster, className, controls, autoPlay, muted }) => {
+const HlsVideoPlayer = ({ src, poster, className, controls, autoPlay, muted, ...rest }) => {
     const videoRef = useRef(null);
     useEffect(() => {
         const video = videoRef.current;
@@ -105,7 +109,7 @@ const HlsVideoPlayer = ({ src, poster, className, controls, autoPlay, muted }) =
         } else { video.src = src; if (autoPlay) video.play().catch(() => { }); }
         return () => hls && hls.destroy();
     }, [src, autoPlay]);
-    return <video ref={videoRef} className={className} controls={controls} muted={muted} poster={poster} playsInline preload="metadata" />;
+    return <video ref={videoRef} className={className} controls={controls} muted={muted} poster={poster} playsInline preload="metadata" {...rest} />;
 };
 
 const TweetEmbed = ({ tweetId }) => {
@@ -412,7 +416,8 @@ function App() {
     const toggleFilter = (filter, isMulti = false) => {
         setActiveFilters(prev => {
             if (filter === 'Trash') return ['Trash'];
-            if (filter === 'All' || filter === 'AllTags') return ['All'];
+            if (filter === 'All') return ['All'];
+            if (filter === 'AllTags') return ['AllTags'];
 
             if (!isMulti) return [filter];
 
@@ -614,7 +619,11 @@ function App() {
         const currentTags = explicitData ? explicitData.tags : customTags;
         const currentTrash = explicitData ? explicitData.trash : trash;
 
-        if (!force && currentBookmarks.length === 0 && currentFolders.length === 0 && currentTags.length === 0) return;
+        const prevState = prevSyncStateRef.current;
+        const hasAnyData = currentBookmarks.length > 0 || currentFolders.length > 0 || currentTags.length > 0 || currentTrash.length > 0;
+        const hadAnyData = prevState && (prevState.bookmarks?.length > 0 || prevState.folders?.length > 0 || prevState.tags?.length > 0 || prevState.trash?.length > 0);
+
+        if (!force && !hasAnyData && !hadAnyData) return;
 
         const saveTask = async () => {
             try {
@@ -751,10 +760,36 @@ function App() {
     const [newTags, setNewTags] = useState('');
     const [newDesc, setNewDesc] = useState('');
 
+    const [isWipeModalOpen, setIsWipeModalOpen] = useState(false);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+    const [isEditingColors, setIsEditingColors] = useState(false);
+    const [colorEditingIndex, setColorEditingIndex] = useState(null);
     const [accentColor, setAccentColor] = useState(() => localStorage.getItem('tweetAccentColor') || '#000000');
+
+    const [customAccentColors, setCustomAccentColors] = useState(() => {
+        const saved = localStorage.getItem('customAccentColors');
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                if (parsed.length > 0 && typeof parsed[0] === 'object' && parsed[0].id && parsed[0].color) return parsed;
+            } catch (e) { }
+        }
+        return [
+            { id: 1, color: '#000000' },
+            { id: 2, color: '#3b82f6' },
+            { id: 3, color: '#10b981' },
+            { id: 4, color: '#f59e0b' },
+            { id: 5, color: '#ef4444' },
+            { id: 6, color: '#8b5cf6' },
+            { id: 7, color: '#ec4899' },
+            { id: 8, color: '#64748b' }
+        ];
+    });
     const [theme, setTheme] = useState(() => localStorage.getItem('tweetTheme') || 'light');
-    const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+
+    useEffect(() => {
+        localStorage.setItem('customAccentColors', JSON.stringify(customAccentColors));
+    }, [customAccentColors]);
     const [autoBackup, setAutoBackup] = useState(() => localStorage.getItem('tweetAutoBackup') === 'true');
     const [lastBackup, setLastBackup] = useState(() => parseInt(localStorage.getItem('tweetLastBackup')) || 0);
     const [showBrandLines, setShowBrandLines] = useState(() => localStorage.getItem('tweetShowBrandLines') !== 'false');
@@ -848,6 +883,12 @@ function App() {
 
     useEffect(() => {
         const handleExternalMessage = (request, sender, sendResponse) => {
+            const dynamicExtId = localStorage.getItem('bookmark_extension_id');
+            const ALLOWED_EXTENSION_IDS = dynamicExtId ? [dynamicExtId] : [];
+            if (!sender.id || !ALLOWED_EXTENSION_IDS.includes(sender.id)) {
+                console.warn('Unauthorized external message from:', sender.id);
+                return;
+            }
             if (request.type === 'GET_APP_DATA') {
                 sendResponse({
                     folders: customFolders,
@@ -880,7 +921,9 @@ function App() {
                     if (pendingBookmarks && pendingBookmarks.length > 0) {
                         setBookmarks(prev => {
                             const existingTweetIds = new Set(prev.map(b => b.tweetId));
-                            const uniquePending = pendingBookmarks.filter(b => !existingTweetIds.has(String(b.tweetId)));
+                            const uniquePending = pendingBookmarks
+                                .filter(b => !existingTweetIds.has(String(b.tweetId)))
+                                .map(b => ({ ...b, folder: normalizeFolder(b.folder) }));
                             return uniquePending.length > 0 ? [...uniquePending, ...prev] : prev;
                         });
                         localStorage.removeItem('pending_twitter_sync');
@@ -897,7 +940,7 @@ function App() {
                             updates.forEach(upd => {
                                 const idx = newPrev.findIndex(b => b.tweetId === String(upd.tweetId));
                                 if (idx !== -1) {
-                                    newPrev[idx] = { ...newPrev[idx], folder: upd.folder, tags: upd.tags, description: upd.note };
+                                    newPrev[idx] = { ...newPrev[idx], folder: normalizeFolder(upd.folder), tags: upd.tags, description: upd.note };
                                 }
                             });
                             return newPrev;
@@ -1120,7 +1163,7 @@ function App() {
             id: Date.now().toString(),
             tweetId,
             url: sanitizeUrl(newUrl),
-            folder: newFolder.trim() || "General",
+            folder: normalizeFolder(newFolder),
             tags: tagsArray,
             description: newDesc.trim(),
             date: `${dateStr} ${timeStr}`,
@@ -1228,49 +1271,22 @@ function App() {
 
 
     // --- RENDER HELPERS ---
-    const getFolderAndDescendants = (folderId, list) => {
-        let names = [list.find(f => f.id === folderId).name];
+    const getFolderAndDescendants = useCallback((folderId, list) => {
+        const folder = list.find(f => f.id === folderId);
+        if (!folder) return [];
+        let names = [folder.name];
         list.filter(f => f.parentId === folderId).forEach(c => {
             names = names.concat(getFolderAndDescendants(c.id, list));
         });
         return names.filter(Boolean);
-    };
-
-    const selectFolderFilter = (folderName) => {
-        const nextFolder = folderName || 'Unsorted';
-        toggleFilter(nextFolder);
-
-        if (!folderName || folderName === 'Unsorted' || folderName === 'General' || folderName === 'Genel') {
-            return;
-        }
-
-        const targetFolder = customFolders.find(f => f.name === folderName);
-        if (!targetFolder) return;
-
-        const parentIds = [];
-        let currentParentId = targetFolder.parentId;
-        while (currentParentId) {
-            parentIds.push(currentParentId);
-            const parentFolder = customFolders.find(f => f.id === currentParentId);
-            currentParentId = parentFolder?.parentId || null;
-        }
-
-        if (parentIds.length > 0) {
-            setExpandedFolders(prev => [...new Set([...prev, ...parentIds])]);
-        }
-    };
-
-    const selectTagFilter = (tagName) => {
-        toggleFilter(`tag:${tagName}`);
-        setIsTagsExpanded(true);
-    };
+    }, []);
 
     const topLevelFolders = useMemo(() => customFolders.filter(f => !f.parentId), [customFolders]);
 
     const folderCounts = useMemo(() => {
         const directCounts = {};
         bookmarks.forEach(b => {
-            const fName = b.folder || 'General';
+            const fName = normalizeFolder(b.folder) || 'Unsorted';
             directCounts[fName] = (directCounts[fName] || 0) + 1;
         });
 
@@ -1319,7 +1335,15 @@ function App() {
     }, [bookmarks]);
 
     const getCumulativeCount = (fId) => folderCounts[fId] || 0;
-    const unsortedCount = useMemo(() => bookmarks.filter(b => !b.folder || b.folder === 'General' || b.folder === 'Genel').length, [bookmarks]);
+    const unsortedCount = useMemo(() => bookmarks.filter(b => isUnsortedFolder(b.folder)).length, [bookmarks]);
+
+    const folderDescendantsMap = useMemo(() => {
+        const map = {};
+        customFolders.forEach(f => {
+            map[f.name] = getFolderAndDescendants(f.id, customFolders);
+        });
+        return map;
+    }, [customFolders, getFolderAndDescendants]);
 
     const filteredBookmarks = useMemo(() => {
         const source = activeFilters.includes('Trash') ? trash : bookmarks;
@@ -1337,9 +1361,9 @@ function App() {
             // If no specific folder filter is active (only tags), we allow all folders
             const matchFolders = folderFilters.length === 0 || folderFilters.some(filter => {
                 if (filter === 'All' || filter === 'AllTags' || filter === 'Trash') return true;
-                if (filter === 'Unsorted') return (!b.folder || b.folder === 'General' || b.folder === 'Genel');
-                const f = customFolders.find(f => f.name === filter);
-                return f ? getFolderAndDescendants(f.id, customFolders).includes(b.folder) : (b.folder === filter);
+                if (filter === 'Unsorted') return isUnsortedFolder(b.folder);
+                const normalized = normalizeFolder(b.folder);
+                return folderDescendantsMap[filter] ? folderDescendantsMap[filter].includes(normalized) : (normalized === filter);
             });
 
             const mF = matchTags && matchFolders;
@@ -1486,6 +1510,7 @@ function App() {
                                 <div className="group flex justify-between items-center mb-3 px-2 cursor-pointer tag-header transition-all py-1" onClick={() => setIsTagsExpanded(!isTagsExpanded)}>
                                     <h2 className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-2"><LucideIcon name={isTagsExpanded ? "chevron-down" : "chevron-right"} size={10} /> Tags</h2>
                                     <div className="flex items-center gap-1.5">
+                                        <button onClick={(e) => { e.stopPropagation(); toggleFilter('AllTags'); setIsSidebarOpen(false); }} className="px-2 h-6 text-[10px] font-bold text-blue-500 bg-blue-50 rounded-lg flex items-center justify-center hover:bg-blue-100 transition-colors">ALL</button>
                                         <button onClick={(e) => { e.stopPropagation(); setEditingTag(null); setTagNameInput(''); setTagColorInput('#64748b'); setIsTagModalOpen(true); }} className="w-6 h-6 bg-slate-100 rounded-lg flex items-center justify-center hover:text-black"><LucideIcon name="plus" size={12} /></button>
                                     </div>
                                 </div>
@@ -1582,6 +1607,7 @@ function App() {
                         <div className="group flex justify-between items-center mb-3 px-2 cursor-pointer tag-header transition-all py-1" onClick={() => setIsTagsExpanded(!isTagsExpanded)}>
                             <h2 className="text-xs font-bold text-slate-600 uppercase tracking-wider flex items-center gap-2"><LucideIcon name={isTagsExpanded ? "chevron-down" : "chevron-right"} size={10} /> Tags</h2>
                             <div className="flex items-center gap-1.5">
+                                <button onClick={(e) => { e.stopPropagation(); toggleFilter('AllTags'); }} className="px-2 h-6 text-[10px] font-bold text-blue-500 bg-blue-50 rounded-lg flex items-center justify-center hover:bg-blue-100 transition-colors">ALL</button>
                                 <button onClick={(e) => { e.stopPropagation(); setEditingTag(null); setTagNameInput(''); setTagColorInput('#64748b'); setIsTagModalOpen(true); }} className="w-6 h-6 bg-slate-100 rounded-lg flex items-center justify-center hover:text-black"><LucideIcon name="plus" size={12} /></button>
                             </div>
                         </div>
@@ -1807,11 +1833,11 @@ function App() {
                                                                 <button
                                                                     onClick={(e) => {
                                                                         e.stopPropagation();
-                                                                        toggleFilter(b.folder || 'Unsorted');
+                                                                        toggleFilter(getFolderLabel(b.folder));
                                                                     }}
                                                                     className="inline-flex items-center px-2 py-0.5 bg-slate-100 text-slate-500 rounded-lg text-[10px] font-bold uppercase tracking-wider whitespace-nowrap hover:bg-slate-200 transition-colors"
                                                                 >
-                                                                    <LucideIcon name="folder" className="mr-1" size={12} style={{ color: customFolders.find(f => f.name === b.folder)?.color || '#94a3b8' }} /> {b.folder || 'Unsorted'}
+                                                                    <LucideIcon name="folder" className="mr-1" size={12} style={{ color: customFolders.find(f => f.name === normalizeFolder(b.folder))?.color || '#94a3b8' }} /> {getFolderLabel(b.folder)}
                                                                 </button>
                                                                 {(b.tags || []).map(tag => {
                                                                     const tO = customTags.find(t => t.name === tag);
@@ -1835,7 +1861,7 @@ function App() {
                                                                 ) : (
                                                                     <button onClick={(e) => handleMoveToTrash(e, b.id)} className="opacity-0 group-hover:opacity-100 text-slate-300 hover:text-red-600 transition-all p-1"><LucideIcon name="trash-2" size={18} className="text-[13px]" /></button>
                                                                 )}
-                                                                <a href={b.url} target="_blank" onClick={(e) => e.stopPropagation()} className="w-7 h-7 flex items-center justify-center bg-white border border-slate-200 shadow-sm text-slate-400 hover:text-black rounded-lg transition-all"><LucideIcon name="external-link" size={12} /></a>
+                                                                <a href={b.url} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="w-7 h-7 flex items-center justify-center bg-white border border-slate-200 shadow-sm text-slate-400 hover:text-black rounded-lg transition-all"><LucideIcon name="external-link" size={12} /></a>
                                                             </div>
                                                         </div>
                                                     </div>
@@ -1906,14 +1932,14 @@ function App() {
 
                                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Folder</h3>
                                     <div className="flex flex-wrap gap-2 mb-5 relative">
-                                        {focusedTweet.folder && focusedTweet.folder !== 'General' && focusedTweet.folder !== 'Unsorted' ? (
+                                        {!isUnsortedFolder(focusedTweet.folder) ? (
                                             <div className="group flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 text-slate-600 rounded-full text-xs font-bold cursor-pointer hover:bg-red-50 hover:text-red-500 transition-all border border-transparent hover:border-red-200" onClick={() => {
-                                                const updated = { ...focusedTweet, folder: 'Unsorted' };
+                                                const updated = { ...focusedTweet, folder: null };
                                                 setFocusedTweet(updated);
                                                 setBookmarks(prev => prev.map(b => b.id === updated.id ? updated : b));
                                             }}>
-                                                <LucideIcon name="folder" size={14} style={{ color: customFolders.find(f => f.name === focusedTweet.folder)?.color || '#94a3b8' }} />
-                                                <span>{focusedTweet.folder}</span>
+                                                <LucideIcon name="folder" size={14} style={{ color: customFolders.find(f => f.name === normalizeFolder(focusedTweet.folder))?.color || '#94a3b8' }} />
+                                                <span>{normalizeFolder(focusedTweet.folder)}</span>
                                                 <LucideIcon name="x" className="ml-1 opacity-0 group-hover:opacity-100 w-3 h-3" />
                                             </div>
                                         ) : (
@@ -1987,7 +2013,7 @@ function App() {
                                     >
                                         <LucideIcon name="trash-2" size={17} />
                                     </button>
-                                    <a href={focusedTweet.url} target="_blank" className="flex-1 flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-xl text-xs font-bold shadow-lg hover:bg-slate-800 transition-all active:scale-95">
+                                    <a href={focusedTweet.url} target="_blank" rel="noopener noreferrer" className="flex-1 flex items-center justify-center gap-2 bg-black text-white px-4 py-3 rounded-xl text-xs font-bold shadow-lg hover:bg-slate-800 transition-all active:scale-95">
                                         {focusedTweet.url && focusedTweet.url.includes('reddit.com') ? 'OPEN ON REDDIT' : 'OPEN ON X'} <LucideIcon name="external-link" size={14} />
                                     </a>
                                 </div>
@@ -2022,7 +2048,7 @@ function App() {
                             <form onSubmit={handleAddBookmark} className="p-6 space-y-4">
                                 <input type="url" required placeholder="Tweet URL (https://x.com/...)" value={newUrl} onChange={e => setNewUrl(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:bg-white outline-none transition-all" />
                                 <div className="grid grid-cols-2 gap-4">
-                                    <CustomDropdown value={newFolder} onChange={setNewFolder} options={[{ name: 'General', color: '#94a3b8' }, ...customFolders]} isMulti={false} />
+                                    <CustomDropdown value={newFolder} onChange={setNewFolder} options={[{ name: 'Unsorted', color: '#94a3b8' }, ...customFolders]} isMulti={false} />
                                     <CustomDropdown value={newTags} onChange={setNewTags} options={customTags} isMulti={true} />
                                 </div>
                                 <textarea placeholder="Your Note..." rows="3" value={newDesc} onChange={e => setNewDesc(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:bg-white outline-none resize-none transition-all" ></textarea>
@@ -2073,7 +2099,7 @@ function App() {
                             <form onSubmit={handleSaveFolder} className="p-6 space-y-4">
                                 <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Name</label><input type="text" required value={folderNameInput} onChange={e => setFolderNameInput(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-100 rounded-xl text-sm focus:bg-white outline-none transition-all" /></div>
                                 <div><label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1">Color</label><div className="flex items-center gap-3"><input type="color" value={folderColorInput} onChange={e => setFolderColorInput(e.target.value)} className="w-12 h-12 p-1 bg-slate-50 border border-slate-100 rounded-xl cursor-pointer shadow-sm" /> <span className="text-sm font-medium uppercase">{folderColorInput}</span></div></div>
-                                <div className="flex gap-2 pt-4"><button type="submit" className="flex-1 bg-green-600 text-white py-3.5 rounded-xl font-bold text-xs shadow-md shadow-green-600/20 hover:bg-green-700 transition-all active:scale-95">SAVE</button>{editingFolder && <button type="button" onClick={() => { if (window.confirm("Delete this folder?")) { setCustomFolders(prev => prev.filter(f => f.id !== editingFolder.id)); setBookmarks(prev => prev.map(b => b.folder === editingFolder.name ? { ...b, folder: 'Unsorted' } : b)); setIsFolderModalOpen(false); } }} className="flex-1 bg-red-50 text-red-500 py-3.5 rounded-xl font-bold text-xs hover:bg-red-100 transition-all active:scale-95">DELETE</button>}</div>
+                                <div className="flex gap-2 pt-4"><button type="submit" className="flex-1 bg-green-600 text-white py-3.5 rounded-xl font-bold text-xs shadow-md shadow-green-600/20 hover:bg-green-700 transition-all active:scale-95">SAVE</button>{editingFolder && <button type="button" onClick={() => { if (window.confirm("Delete this folder?")) { setCustomFolders(prev => prev.filter(f => f.id !== editingFolder.id)); setBookmarks(prev => prev.map(b => b.folder === editingFolder.name ? { ...b, folder: null } : b)); setIsFolderModalOpen(false); } }} className="flex-1 bg-red-50 text-red-500 py-3.5 rounded-xl font-bold text-xs hover:bg-red-100 transition-all active:scale-95">DELETE</button>}</div>
                             </form>
                         </div>
                     </div>
@@ -2087,15 +2113,91 @@ function App() {
                             <div className="p-6 border-b border-gray-50 flex justify-between items-center"><h3 className="font-bold text-slate-900 text-lg">Settings</h3><button onClick={() => setIsSettingsOpen(false)} className="w-8 h-8 flex items-center justify-center hover:bg-slate-100 rounded-full transition-all"><LucideIcon name="x" className="text-slate-400" /></button></div>
                             <div className="p-6 space-y-6">
                                 <div>
-                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">Accent Color</label>
-                                    <div className="flex flex-wrap gap-2 mb-4">
-                                        {['#000000', '#3b82f6', '#8b5cf6', '#ec4899', '#ef4444', '#f97316', '#10b981', '#06b6d4'].map(color => (
-                                            <button key={color} onClick={() => setAccentColor(color)} className={`w-9 h-9 rounded-xl transition-all shadow-sm hover:scale-110 ${accentColor === color ? 'ring-2 ring-offset-2 ring-slate-400 scale-110' : ''}`} style={{ backgroundColor: color }}></button>
-                                        ))}
+                                    <div className="flex justify-between items-center mb-3">
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Accent Color</label>
+                                        {customAccentColors.length > 2 && (
+                                            <button
+                                                onClick={() => setIsEditingColors(!isEditingColors)}
+                                                className={`text-[10px] font-bold uppercase transition-colors px-2 py-1 rounded-md ${isEditingColors ? 'bg-blue-100 text-blue-600' : 'text-blue-500 hover:bg-slate-50'}`}
+                                            >
+                                                {isEditingColors ? 'Bitti' : 'Düzenle'}
+                                            </button>
+                                        )}
                                     </div>
-                                    <div className="flex items-center gap-3">
-                                        <input type="color" value={accentColor} onChange={e => setAccentColor(e.target.value)} className="w-10 h-10 p-1 bg-slate-50 border border-slate-100 rounded-xl cursor-pointer shadow-sm" />
-                                        <input type="text" value={accentColor} onChange={e => { if (/^#[0-9a-fA-F]{0,6}$/.test(e.target.value)) setAccentColor(e.target.value); }} onBlur={e => { if (!/^#[0-9a-fA-F]{6}$/i.test(accentColor) && !/^#[0-9a-fA-F]{3}$/i.test(accentColor)) setAccentColor('#000000'); }} className="flex-1 px-4 py-2.5 bg-slate-50 border border-slate-100 rounded-xl text-sm font-mono uppercase outline-none focus:bg-white transition-all" />
+                                    <div className="flex flex-wrap gap-2">
+                                        {customAccentColors.map((colorObj, i) => (
+                                            <div key={colorObj.id} className="relative group/col">
+                                                {isEditingColors && i > 1 ? (
+                                                    <div className={`relative w-9 h-9 rounded-xl transition-all shadow-sm border-2 border-white ring-2 ring-blue-200 overflow-hidden ${colorEditingIndex === i ? 'scale-110 ring-blue-400' : 'opacity-60'}`}>
+                                                        <div className="w-full h-full pointer-events-none" style={{ backgroundColor: colorObj.color }}></div>
+                                                        <input
+                                                            type="color"
+                                                            defaultValue={colorObj.color}
+                                                            className="absolute -inset-4 w-[200%] h-[200%] opacity-0 cursor-pointer color-picker-input"
+                                                            onFocus={() => setColorEditingIndex(i)}
+                                                            onInput={(e) => {
+                                                                // Sadece görseli anlık güncelleyelim, state'e dokunmayalım
+                                                                e.target.previousSibling.style.backgroundColor = e.target.value;
+                                                            }}
+                                                            onChange={(e) => {
+                                                                // OnChange (seçim bitince) ana listeyi güncelleyelim
+                                                                const newCols = [...customAccentColors];
+                                                                newCols[i].color = e.target.value;
+                                                                setCustomAccentColors(newCols);
+                                                                localStorage.setItem('customAccentColors', JSON.stringify(newCols));
+                                                            }}
+                                                            onBlur={(e) => {
+                                                                setAccentColor(e.target.value);
+                                                                setIsEditingColors(false);
+                                                                setColorEditingIndex(null);
+                                                            }}
+                                                        />
+                                                    </div>
+                                                ) : (
+                                                    <button onClick={() => setAccentColor(colorObj.color)} className={`w-9 h-9 rounded-xl transition-all shadow-sm hover:scale-110 ${accentColor === colorObj.color ? 'ring-2 ring-offset-2 ring-slate-400 scale-110' : ''}`} style={{ backgroundColor: colorObj.color }}></button>
+                                                )}
+
+                                                {isEditingColors && i > 1 && (
+                                                    <button
+                                                        onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            const newCols = customAccentColors.filter((_, idx) => idx !== i);
+                                                            setCustomAccentColors(newCols);
+                                                            localStorage.setItem('customAccentColors', JSON.stringify(newCols));
+                                                            if (accentColor === colorObj.color) setAccentColor(newCols[0]?.color || '#000000');
+                                                            if (newCols.length <= 2) setIsEditingColors(false);
+                                                        }}
+                                                        className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white flex justify-center items-center shadow-sm transition-all scale-100 z-10 hover:bg-red-600"
+                                                    >
+                                                        <LucideIcon name="x" size={12} />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        ))}
+                                        {customAccentColors.length < 9 && (
+                                            <button
+                                                onClick={() => {
+                                                    const newColorObj = {
+                                                        id: Date.now(),
+                                                        color: '#3b82f6'
+                                                    };
+
+                                                    setCustomAccentColors(prev => [...prev, newColorObj]);
+                                                    setAccentColor(newColorObj.color);
+                                                    setIsEditingColors(true);
+                                                    setColorEditingIndex(customAccentColors.length);
+                                                    setTimeout(() => {
+                                                        const inputs = document.querySelectorAll('.color-picker-input');
+                                                        if (inputs.length > 0) {
+                                                            inputs[inputs.length - 1].click();
+                                                        }
+                                                    }, 50);
+                                                }}
+                                                className="relative w-9 h-9 flex items-center justify-center rounded-xl transition-all shadow-sm hover:bg-slate-200 bg-slate-100 cursor-pointer text-slate-500 overflow-hidden"
+                                            >
+                                                <LucideIcon name="plus" size={16} />
+                                            </button>
+                                        )}
                                     </div>
                                 </div>
 
@@ -2127,7 +2229,7 @@ function App() {
                                 </div>
                                 <div className="pt-6 border-t border-slate-50">
                                     <div className="flex justify-between items-center mb-4">
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Storage Usage (IndexedDB)</label>
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Storage Usage</label>
                                         <span className={`text-[9px] font-black px-2 py-0.5 rounded-full ${(storageInfo.used / (1024 * 1024)) < 80 ? 'bg-green-100 text-green-600' : (storageInfo.used / (1024 * 1024)) < 90 ? 'bg-yellow-100 text-yellow-600' : 'bg-red-100 text-red-600'}`}>
                                             {(storageInfo.used / (1024 * 1024)) < 80 ? 'OPTIMIZED' : (storageInfo.used / (1024 * 1024)) < 90 ? 'HEAVY' : 'CRITICAL'}
                                         </span>
@@ -2145,37 +2247,32 @@ function App() {
                                                 style={{ width: `${Math.min((storageInfo.used / (1024 * 1024 * 100)) * 100, 100) || 0}%` }}
                                             ></div>
                                         </div>
-                                        <p className="mt-3 text-[10px] font-medium text-slate-400 leading-relaxed italic">
-                                            Performance starts to degrade after 100MB due to memory constraints.
-                                        </p>
                                     </div>
                                 </div>
 
                                 <div className="pt-6 border-t border-slate-50 font-sans">
-                                    <div className="flex items-center justify-between mb-2">
-                                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Marka Çizgisi Ekleme</label>
-                                        <button onClick={() => setShowBrandLines(!showBrandLines)} className={`w-10 h-5 rounded-full transition-all relative ${showBrandLines ? 'bg-blue-500' : 'bg-slate-200'}`}><div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${showBrandLines ? 'right-1' : 'left-1'}`}></div></button>
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">Marka Çizgisi Ekleme</label>
+                                    <div className="flex gap-2 mb-6">
+                                        <button
+                                            onClick={() => { setShowBrandLines(false); }}
+                                            className={`flex-1 py-2.5 px-3 rounded-xl text-[11px] font-bold transition-all border ${!showBrandLines ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100'}`}
+                                        >
+                                            Kapalı
+                                        </button>
+                                        <button
+                                            onClick={() => { setShowBrandLines(true); setBrandLineStyle('bar'); }}
+                                            className={`flex-1 py-2.5 px-3 rounded-xl text-[11px] font-bold transition-all border ${showBrandLines && brandLineStyle === 'bar' ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100'}`}
+                                        >
+                                            Alt Çizgi
+                                        </button>
+                                        <button
+                                            onClick={() => { setShowBrandLines(true); setBrandLineStyle('border'); }}
+                                            className={`flex-1 py-2.5 px-3 rounded-xl text-[11px] font-bold transition-all border ${showBrandLines && brandLineStyle === 'border' ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-slate-50 border-slate-100 text-slate-500 hover:bg-slate-100'}`}
+                                        >
+                                            Kenarlık
+                                        </button>
                                     </div>
 
-                                    {showBrandLines && (
-                                        <div className="mb-4">
-                                            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Çizgi Stili</label>
-                                            <div className="flex gap-2">
-                                                <button
-                                                    onClick={() => setBrandLineStyle('bar')}
-                                                    className={`flex-1 py-2 px-3 rounded-xl text-[11px] font-bold transition-all border ${brandLineStyle === 'bar' ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-slate-50 border-slate-100 text-slate-500'}`}
-                                                >
-                                                    Alt Çizgi
-                                                </button>
-                                                <button
-                                                    onClick={() => setBrandLineStyle('border')}
-                                                    className={`flex-1 py-2 px-3 rounded-xl text-[11px] font-bold transition-all border ${brandLineStyle === 'border' ? 'bg-blue-50 border-blue-200 text-blue-600' : 'bg-slate-50 border-slate-100 text-slate-500'}`}
-                                                >
-                                                    Kenarlık
-                                                </button>
-                                            </div>
-                                        </div>
-                                    )}
                                     <div className="flex items-center justify-between mb-2">
                                         <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block">Automatic Backup</label>
                                         <div
@@ -2185,30 +2282,33 @@ function App() {
                                             <div className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow-sm transition-all duration-300 ${autoBackup ? 'left-5.5' : 'left-0.5'}`} style={{ left: autoBackup ? '22px' : '2px' }}></div>
                                         </div>
                                     </div>
-                                    <p className="text-[10px] text-slate-400 font-medium leading-relaxed italic pr-8">
+                                    <p className="text-[10px] text-slate-400 font-medium leading-relaxed italic pr-8 mb-6">
                                         Automatically creates a JSON backup file once a day when you open the app.
                                     </p>
-                                    <div className="mt-4 flex gap-2">
-                                        <button
-                                            onClick={() => { handleExportJSON(); }}
-                                            className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl text-[11px] font-bold transition-all active:scale-95"
-                                        >
-                                            MANUAL EXPORT
-                                        </button>
-                                        <button
-                                            onClick={() => {
-                                                if (window.confirm("Clear all archived data? THIS CANNOT BE UNDONE!")) {
-                                                    db.bookmarks.clear();
-                                                    db.folders.clear();
-                                                    db.tags.clear();
-                                                    db.trash.clear();
-                                                    window.location.reload();
-                                                }
-                                            }}
-                                            className="flex-1 bg-red-50 hover:bg-red-100 text-red-500 py-3 rounded-xl text-[11px] font-bold transition-all active:scale-95"
-                                        >
-                                            WIPE DATABASE
-                                        </button>
+
+                                    <div className="space-y-2 mt-4">
+                                        <div className="flex items-center justify-between p-3 rounded-xl border border-slate-100 hover:border-slate-200 hover:bg-slate-50 cursor-pointer group transition-all" onClick={() => handleExportJSON()}>
+                                            <div className="flex flex-col">
+                                                <span className="text-sm font-bold text-slate-700 group-hover:text-blue-600 transition-colors">Manual Export</span>
+                                                <span className="text-[10px] font-medium text-slate-400">Download a JSON backup manually.</span>
+                                            </div>
+                                            <div className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-100 group-hover:bg-blue-100 text-slate-400 group-hover:text-blue-500 transition-all">
+                                                <LucideIcon name="download" size={14} />
+                                            </div>
+                                        </div>
+
+                                        <div className="flex items-center justify-between p-3 rounded-xl border border-red-50 hover:border-red-100 hover:bg-red-50 cursor-pointer group transition-all" onClick={() => {
+                                            setIsSettingsOpen(false);
+                                            setIsWipeModalOpen(true);
+                                        }}>
+                                            <div className="flex flex-col">
+                                                <span className="text-sm font-bold text-red-500 group-hover:text-red-600 transition-colors">Wipe Database</span>
+                                                <span className="text-[10px] font-medium text-red-400/80">Clear all archived data permanently.</span>
+                                            </div>
+                                            <div className="w-8 h-8 flex items-center justify-center rounded-full bg-red-100 group-hover:bg-red-200 text-red-400 group-hover:text-red-600 transition-all">
+                                                <LucideIcon name="trash-2" size={14} />
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
@@ -2216,6 +2316,34 @@ function App() {
                     </div>
                 )
             }
+
+            {
+                isWipeModalOpen && (
+                    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[200] flex items-center justify-center p-4 modal-enter" onClick={() => setIsWipeModalOpen(false)}>
+                        <div className="bg-white rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl text-center" onClick={e => e.stopPropagation()}>
+                            <div className="p-8">
+                                <div className="w-16 h-16 bg-red-50 border-4 border-white shadow-sm text-red-500 rounded-full flex items-center justify-center mx-auto mb-5">
+                                    <LucideIcon name="alert-triangle" size={28} />
+                                </div>
+                                <h3 className="text-xl font-black text-slate-900 mb-3 tracking-tight">Bütün Veritabanı Silinecek!</h3>
+                                <p className="text-[13px] text-slate-500 mb-8 px-2 leading-relaxed">Bu işlem geri alınamaz. Arşivlenen tüm içerikleriniz kalıcı olarak gidecek. Onaylıyor musunuz?</p>
+                                <div className="flex gap-3">
+                                    <button onClick={() => setIsWipeModalOpen(false)} className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-3.5 rounded-xl font-bold text-sm transition-all active:scale-95">İptal</button>
+                                    <button onClick={() => {
+                                        setIsWipeModalOpen(false);
+                                        db.bookmarks.clear();
+                                        db.folders.clear();
+                                        db.tags.clear();
+                                        db.trash.clear();
+                                        window.location.reload();
+                                    }} className="flex-1 bg-red-500 hover:bg-red-600 text-white py-3.5 rounded-xl font-bold text-sm shadow-lg shadow-red-500/20 transition-all active:scale-95">Evet, Sil</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )
+            }
+
 
             {/* TOAST NOTIFICATIONS */}
             {toasts.length > 0 && (
