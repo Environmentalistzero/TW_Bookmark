@@ -171,9 +171,10 @@ const extractHandle = (url) => {
 
 const getHighResUrl = (url) => {
     if (!url) return '';
-    if (url.match(/\.(mp4|webm|ogg|m3u8)/i)) return url;
-    if (url.includes('name=')) return url.replace(/name=[a-zA-Z0-9_]+/, 'name=orig');
-    if (url.includes('pbs.twimg.com')) return url + (url.includes('?') ? '&' : '?') + 'name=orig';
+    const isVideoFile = String(url).match(/\.(mp4|webm|ogg|m3u8)|video\.twimg\.com|v\.redd\.it|ext_tw_video/i);
+    if (isVideoFile) return url;
+    if (url.includes('name=')) return url.replace(/name=[a-zA-Z0-9_]+/, 'name=orig') + '#.jpg';
+    if (url.includes('pbs.twimg.com')) return url + (url.includes('?') ? '&' : '?') + 'name=orig' + '#.jpg';
     return url;
 };
 
@@ -269,9 +270,15 @@ const CustomTweetCard = React.memo(({ bookmark, onImageClick }) => {
     const handle = bookmark.authorHandle || extractHandle(bookmark.url);
     const name = bookmark.authorName || handle;
     const avatar = bookmark.profileImg || (bookmark.url && bookmark.url.includes('reddit.com') ? 'https://www.redditstatic.com/avatars/defaults/v2/avatar_default_1.png' : 'https://abs.twimg.com/sticky/default_profile_images/default_profile_400x400.png');
+    const isVideoFile = (url) => String(url).match(/\.(mp4|webm|ogg|m3u8)|video\.twimg\.com|v\.redd\.it|ext_tw_video/i);
     const medias = bookmark.mediaUrls ? String(bookmark.mediaUrls).split(',').filter(Boolean) : [];
-    const isVideo = bookmark.mediaType === 'video' || medias.some(m => String(m).match(/\.(mp4|webm|ogg|m3u8)/i));
+    const videoIdx = medias.findIndex(m => isVideoFile(m));
+    const isVideo = bookmark.mediaType === 'video' || videoIdx !== -1;
     const isReddit = bookmark.url && bookmark.url.includes('reddit.com');
+
+    // Determine the best poster and video URL
+    const videoUrl = videoIdx !== -1 ? medias[videoIdx] : (isVideo ? medias[0] : null);
+    const posterUrl = bookmark.posterUrl || (medias.find(m => !isVideoFile(m)) || medias[0]);
 
     return (
         <div className="text-left w-full">
@@ -291,18 +298,19 @@ const CustomTweetCard = React.memo(({ bookmark, onImageClick }) => {
                 <div className={`rounded-2xl overflow-hidden border border-slate-100 bg-transparent ${medias.length > 1 && !isVideo ? 'grid grid-cols-2 gap-1 aspect-square md:aspect-video' : ''}`}>
                     {isVideo ? (
                         <a
-                            href={getHighResUrl(medias[0])}
+                            href={getHighResUrl(videoUrl || medias[0])}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="relative w-full bg-black flex items-center justify-center aspect-video cursor-pointer hover:opacity-90 transition-opacity"
+                            className="relative w-full bg-slate-900 flex items-center justify-center aspect-video cursor-pointer hover:opacity-90 transition-opacity"
                             onClick={(e) => {
                                 e.preventDefault();
                                 e.stopPropagation();
-                                onImageClick(medias, 0, 'video', bookmark.posterUrl);
+                                const idx = videoIdx !== -1 ? videoIdx : 0;
+                                onImageClick(medias, idx, 'video', posterUrl);
                             }}
                         >
-                            <video src={medias[0]} className="w-full h-full object-cover opacity-70 pointer-events-none" muted playsInline />
-                            <div className="absolute w-12 h-12 bg-white/30 backdrop-blur-sm rounded-full flex items-center justify-center z-10 pointer-events-none">
+                            <img src={posterUrl} className="w-full h-full object-cover opacity-80" alt="Video Preview" />
+                            <div className="absolute w-12 h-12 bg-black/40 backdrop-blur-sm rounded-full flex items-center justify-center z-10 pointer-events-none border border-white/20">
                                 <LucideIcon name="play" className="text-white text-xl ml-1" />
                             </div>
                         </a>
@@ -458,7 +466,9 @@ const CustomDropdown = ({ value, onChange, options, isMulti }) => {
                         >
                             <span className="flex items-center gap-2">
                                 <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: opt.color || '#cbd5e1' }}></span>
-                                {isMulti ? `#${opt.name}` : opt.name}
+                                <span className={isMulti ? "uppercase tracking-wider font-bold" : ""}>
+                                    {isMulti ? `#${opt.name}` : opt.name}
+                                </span>
                             </span>
                             <div className="tm-dropdown-checkbox"></div>
                         </div>
@@ -1476,7 +1486,7 @@ function App() {
                         dragItemRef.current = null;
                     }}
                     className={`group flex items-center rounded-xl transition-all cursor-pointer ${isActive ? 'text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'} ${isDragOver ? 'ring-2 ring-blue-400 ring-inset bg-blue-50/70' : ''}`}
-                    style={{ paddingLeft: `${depth * 1.25 + 0.25}rem`, paddingRight: '1rem', paddingTop: '0.15rem', paddingBottom: '0.15rem', ...(isActive && !isDragOver ? { backgroundColor: accentColor } : {}) }}
+                    style={{ paddingLeft: `${depth * 1.25 + 0.25}rem`, paddingRight: '1rem', paddingTop: '0.05rem', paddingBottom: '0.05rem', ...(isActive && !isDragOver ? { backgroundColor: accentColor } : {}) }}
                 >
                     <button onClick={(e) => { e.stopPropagation(); setExpandedFolders(prev => prev.includes(folder.id) ? prev.filter(x => x !== folder.id) : [...prev, folder.id]); }} className={`w-4 h-5 flex items-center justify-center shrink-0 ${children.length === 0 ? 'invisible' : ''}`}><LucideIcon name={isExpanded ? "chevron-down" : "chevron-right"} size={10} /></button>
                     <button onClick={() => toggleFilter(folder.name)} className="flex-1 flex items-center gap-2 text-[15px] font-bold truncate py-1.5 text-left"><LucideIcon name="folder" className="text-[14px]" style={{ color: isActive ? '#fff' : folder.color }} /> <span>{folder.name}</span></button>
@@ -1614,7 +1624,7 @@ function App() {
                                                         style={isActive ? { backgroundColor: accentColor } : {}}
                                                     >
                                                         <span className="font-black mr-1.5 text-[11px] flex items-center" style={{ color: isActive ? '#fff' : tag.color }}>#</span>
-                                                        <span className="text-[13px] font-bold flex items-center">{tag.name}</span>
+                                                        <span className="text-[12px] font-bold flex items-center uppercase tracking-wider">{tag.name}</span>
                                                         <span className={`ml-2 text-[10px] font-black flex items-center h-full pt-[1px] ${isActive ? 'opacity-70' : 'opacity-30'}`}>{count}</span>
                                                     </div>
                                                 );
@@ -1626,9 +1636,9 @@ function App() {
                                                         className={`px-4 flex items-center rounded-xl transition-all cursor-pointer group ${isActive ? 'text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
                                                         style={isActive ? { backgroundColor: accentColor } : {}}
                                                     >
-                                                        <button className="flex-1 flex items-center gap-3 py-1.5 text-[15px] font-bold text-left">
-                                                            <span className="font-black text-lg w-5 flex justify-center shrink-0" style={{ color: isActive ? '#fff' : tag.color }}>#</span>
-                                                            <span className="truncate">{tag.name}</span>
+                                                        <button className="flex-1 flex items-center gap-2 py-0 text-[15px] font-bold text-left">
+                                                            <span className="font-black text-[14px] w-5 flex justify-center shrink-0" style={{ color: isActive ? '#fff' : tag.color }}>#</span>
+                                                            <span className="truncate uppercase tracking-wider text-[11px]">{tag.name}</span>
                                                         </button>
                                                         <div className="flex items-center w-10 justify-center shrink-0 h-full">
                                                             <span className={`text-[11px] font-black ${isActive ? 'text-white/70' : 'opacity-60'}`}>{count}</span>
@@ -1754,7 +1764,7 @@ function App() {
                                                 style={isActive ? { backgroundColor: accentColor } : {}}
                                             >
                                                 <span className="font-black text-[12px] mr-1.5 shrink-0 flex items-center" style={{ color: isActive ? '#fff' : tag.color }}>#</span>
-                                                <span className="text-[14px] font-bold truncate max-w-[140px] flex items-center">{tag.name}</span>
+                                                <span className="text-[11px] font-bold uppercase tracking-wider truncate max-w-[140px] flex items-center">{tag.name}</span>
                                                 <div className="flex items-center justify-center ml-2 min-w-[14px] h-full">
                                                     <span className={`text-[11px] font-black flex items-center pt-[1px] group-hover:hidden ${isActive ? 'opacity-70' : 'opacity-30'}`}>{count}</span>
                                                     <button onClick={(e) => { e.stopPropagation(); setEditingTag(tag); setTagNameInput(tag.name); setTagColorInput(tag.color); setIsTagModalOpen(true); }} className={`hidden group-hover:flex items-center hover:text-blue-500 ${isActive ? 'text-white' : 'text-slate-400'}`}><LucideIcon name="pen" size={11} /></button>
@@ -1769,9 +1779,9 @@ function App() {
                                                 className={`px-4 flex items-center rounded-xl transition-all cursor-pointer group ${isActive ? 'text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100'}`}
                                                 style={isActive ? { backgroundColor: accentColor } : {}}
                                             >
-                                                <button className="flex-1 flex items-center gap-3 py-1.5 text-[15px] font-bold text-left">
-                                                    <span className="font-black text-lg w-5 flex justify-center shrink-0" style={{ color: isActive ? '#fff' : tag.color }}>#</span>
-                                                    <span className="truncate">{tag.name}</span>
+                                                <button className="flex-1 flex items-center gap-2 py-0 text-[15px] font-bold text-left">
+                                                    <span className="font-black text-[14px] w-5 flex justify-center shrink-0" style={{ color: isActive ? '#fff' : tag.color }}>#</span>
+                                                    <span className="truncate uppercase tracking-wider text-[11px]">{tag.name}</span>
                                                 </button>
                                                 <div className="flex items-center w-10 justify-center shrink-0 h-full">
                                                     <span className={`text-[11px] font-black group-hover:hidden ${isActive ? 'text-white/70' : 'opacity-60'}`}>{count}</span>
@@ -2051,7 +2061,7 @@ function App() {
                                                 className="group flex items-center gap-3 px-4 py-2.5 rounded-xl transition-all active:scale-95 border bg-white border-slate-200 text-slate-700 hover:border-slate-400 hover:shadow-md hover:-translate-y-0.5"
                                             >
                                                 <span className="font-black text-[16px]" style={{ color: tag.color }}>#</span>
-                                                <span className="text-[14px] font-bold">{tag.name}</span>
+                                                <span className="text-[12px] font-bold uppercase tracking-wider">{tag.name}</span>
                                                 <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-slate-100 text-slate-400">{count}</span>
                                             </button>
                                         );
@@ -2097,7 +2107,7 @@ function App() {
                                                                                 e.stopPropagation();
                                                                                 toggleFilter(`tag:${tag}`);
                                                                             }}
-                                                                            className="flex items-center gap-1 px-2 py-0.5 bg-slate-50 border border-slate-100 text-slate-500 rounded-lg text-[10px] font-semibold truncate hover:bg-slate-100 transition-colors"
+                                                                            className="flex items-center gap-1 px-2 py-0.5 bg-slate-50 border border-slate-100 text-slate-500 rounded-lg text-[10px] font-bold uppercase tracking-wider truncate hover:bg-slate-100 transition-colors"
                                                                         >
                                                                             <span className="font-black" style={{ color: tO?.color || '#64748b' }}>#</span>{tag}
                                                                         </button>
@@ -2225,7 +2235,7 @@ function App() {
                                                 setBookmarks(prev => prev.map(b => b.id === updated.id ? updated : b));
                                             }}>
                                                 <span className="font-black" style={{ color: customTags.find(t => t.name === tag)?.color || '#64748b' }}>#</span>
-                                                <span>{tag}</span>
+                                                <span className="uppercase tracking-wider">{tag}</span>
                                                 <LucideIcon name="x" className="ml-1 opacity-0 group-hover:opacity-100 w-3 h-3" />
                                             </div>
                                         ))}
@@ -2246,7 +2256,7 @@ function App() {
                                                             setActiveAddMenu(null);
                                                         }} className="flex items-center gap-2 px-3 py-2 hover:bg-slate-50 rounded-lg cursor-pointer text-sm font-medium text-slate-700">
                                                             <span className="font-black" style={{ color: t.color }}>#</span>
-                                                            {t.name}
+                                                            <span className="uppercase tracking-wider">{t.name}</span>
                                                         </div>
                                                     )) : <div className="px-3 py-2 text-xs text-slate-400 italic">No more tags</div>}
                                                 </div>
